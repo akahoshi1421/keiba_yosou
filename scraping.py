@@ -1,63 +1,87 @@
-
 import requests
 import json
 import pandas as pd
+from bs4 import BeautifulSoup
+import re
+import time
+import os
 
-# The race ID for the target race
-race_id = "202510020411"
+def fetch_and_save_shutuba_data(race_id, retries=3, delay=5):
+    """
+    Fetches shutuba data from netkeiba.com race page and saves it to a CSV file.
+    It extracts data directly from the HTML, looking for a specific script tag.
+    Prioritizes loading from a local CSV if it already exists.
 
-# This API endpoint and parameters are based on the JavaScript found in the page source
-api_url = "https://race.netkeiba.com/race_api/"
-params = {
-    'class': 'AplRaceHorse',
-    'race_id': race_id,
-    'method': 'get',
-    'compress': 0,
-    'output': 'jsonp', # The API seems to return JSON even with this setting
-    'input': 'UTF-8'
-}
+    Args:
+        race_id (str): The ID of the race.
+        retries (int): Number of retries for fetching data.
+        delay (int): Delay in seconds between retries.
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36",
-    "Referer": "https://race.netkeiba.com/"
-}
+    Returns:
+        str: The path to the saved CSV file, or None if an error occurred.
+    """
+    csv_path = f"/Users/akahoshihiroki/Documents/pytests/keiba_yosou/shutuba_{race_id}.csv"
 
-try:
-    response = requests.get(api_url, params=params, headers=headers)
-    response.raise_for_status() # Raise an exception for bad status codes
+    # Check if CSV already exists locally
+    if os.path.exists(csv_path):
+        print(f"出馬表データを {csv_path} から読み込みました (既存ファイル)。")
+        return csv_path
 
-    # The response is JSON, sometimes wrapped in parentheses. Let's handle that.
-    json_text = response.text
-    if json_text.startswith('(') and json_text.endswith(')'):
-        json_text = json_text[1:-1]
+    # If not, try to fetch from netkeiba.com
+    for i in range(retries):
+        try:
+            url = f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
+            response = requests.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36",
+                "Referer": "https://race.netkeiba.com/"
+            })
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, "lxml")
 
-    data = json.loads(json_text)
+            # Look for the script tag that contains the horse data
+            script_tag = soup.find('script', text=re.compile(r'var HorseData = '))
+            if not script_tag:
+                print(f"Error: HorseData script tag not found for race_id {race_id}")
+                return None
 
-    # The actual horse list is nested under a dynamic key
-    data_key = f"nkrace_horse::{race_id}"
+            json_str_match = re.search(r'var HorseData = (.*?);', script_tag.string)
+            if not json_str_match:
+                print(f"Error: HorseData JSON not found in script tag for race_id {race_id}")
+                return None
 
-    if data.get('status') == 'OK' and data.get('data') and data_key in data['data']:
-        horse_list = data['data'][data_key]
+            horse_data_json = json_str_match.group(1)
+            horse_list = json.loads(horse_data_json)
 
-        if horse_list:
-            # Convert the list of dictionaries to a DataFrame
-            df = pd.DataFrame.from_dict(horse_list)
-            print("APIから出馬表データを取得しました。")
-            print(df.to_string())
+            if horse_list:
+                df = pd.DataFrame(horse_list)
+                df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+                print(f"出馬表データを {csv_path} に保存しました。")
+                return csv_path
+            else:
+                print(f"出馬表データが空でした for race_id {race_id}。")
+                return None
 
-            # Save the DataFrame to a CSV file
-            csv_path = f"/Users/akahoshihiroki/Documents/pytests/keiba_yosou/shutuba_{race_id}.csv"
-            df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-            print(f"出馬表データを {csv_path} に保存しました。")
-        else:
-            print("APIからの応答に出馬表データが含まれていませんでした（リストが空です）。")
-            print("レースが未来の日付のため、まだ出馬表が公開されていない可能性があります。")
+        except requests.exceptions.RequestException as e:
+            print(f"出馬表ページの取得中にエラーが発生しました for race_id {race_id}: {e}")
+            if i < retries - 1:
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                print(f"Max retries reached for race_id {race_id}.")
+        except json.JSONDecodeError:
+            print(f"出馬表データJSONの解析中にエラーが発生しました for race_id {race_id}.")
+            return None
+        except Exception as e:
+            print(f"予期せぬエラーが発生しました for race_id {race_id}: {e}")
+            return None
+    return None
+
+if __name__ == '__main__':
+    # Example usage for testing
+    test_race_id = "202410030211" # Example race ID (北九州記念)
+    print(f"Fetching data for race ID: {test_race_id}")
+    csv_file = fetch_and_save_shutuba_data(test_race_id)
+    if csv_file:
+        print(f"Data saved to: {csv_file}")
     else:
-        print("APIからの応答に予期したデータ構造が見つかりませんでした。")
-        print("Response Data:", data)
-
-except requests.exceptions.RequestException as e:
-    print(f"APIへのリクエスト中にエラーが発生しました: {e}")
-except json.JSONDecodeError:
-    print("APIからの応答をJSONとして解析できませんでした。")
-    print(f"Response Text: {response.text[:300]}...")
+        print("Failed to fetch data.")

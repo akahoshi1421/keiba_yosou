@@ -1,0 +1,48 @@
+さらに追加の指摘をします。
+
+## 馬券購入枚数
+あなたが分析の時に出力したおすすめ3連複馬券(Recommend)には5枚しか買っていないように見えます。
+
+動的に買う枚数を変化させても良いですが、最低でも10枚は絶対に買ってください。
+
+ただし、動的に買う枚数を変化といっても「当たった時必ずお金を回収できる枚数」に抑えてください。(多くとも20枚までに抑えて欲しいです。)
+
+また、何枚馬券を買ったか表示してください。
+
+## 分析
+あなたがした分析手法+スコアリングアルゴリズムが本当に正しいかどうか仮検証するステップを入れてください。
+
+仮検証はpastRace.txtの上から15レース
+
+要するに
+```
+- https://race.netkeiba.com/race/result.html?race_id=202505030211
+- https://race.netkeiba.com/race/result.html?race_id=202505021211
+- https://race.netkeiba.com/race/result.html?race_id=202509020611
+- https://race.netkeiba.com/race/result.html?race_id=202506030811
+- https://race.netkeiba.com/race/result.html?race_id=202505010811
+- https://race.netkeiba.com/race/result.html?race_id=202507020611
+- https://race.netkeiba.com/race/result.html?race_id=202509020411
+- https://race.netkeiba.com/race/result.html?race_id=202508020411
+- https://race.netkeiba.com/race/result.html?race_id=202505020611
+- https://race.netkeiba.com/race/result.html?race_id=202505020811
+- https://race.netkeiba.com/race/result.html?race_id=202505021011
+- https://race.netkeiba.com/race/result.html?race_id=202509030411
+- https://race.netkeiba.com/race/result.html?race_id=202506010111
+- https://race.netkeiba.com/race/result.html?race_id=202507010111
+- https://race.netkeiba.com/race/result.html?race_id=202506010411
+```
+のみで検証を行って下さい。
+
+勝率が30%以上になり、回収できそうと判断した場合は138レースで評価を行い本格的な評価に入ってください。
+(勝率は1回のレースで1枚馬券があたれば「勝利」とし、`(勝利したレース/評価を行った総レース)*100`です。)
+
+そうでない場合は先ほどのようにアルゴリズムを見直し、コードを書き直す手順を続けてください。
+
+138レースの本格評価でも同様で勝率が20%以上にならない場合も同様にアルゴリズムを見直し、コードを書き直す手順を続けてください。
+
+
+
+
+以上を可能にするプログラムを追加してから評価を「「「必ず」」」行ってください。
+

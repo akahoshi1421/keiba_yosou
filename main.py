@@ -1,79 +1,159 @@
 import pandas as pd
 import itertools
+import sys
+import re
+import requests
+from bs4 import BeautifulSoup
 from scorer import get_horse_total_score
+from scraping import fetch_and_save_shutuba_data
 
 # --- Configuration ---
-SHUTUBA_CSV_PATH = "/Users/akahoshihiroki/Documents/pytests/keiba_yosou/shutuba_202510020411.csv"
+# No specific configuration for number of recommendations as trifecta is removed.
 
-# Target race conditions for 北九州記念 (Kokura, Turf 1200m)
-# These should ideally be dynamically extracted from the race page if it changes.
-TARGET_DISTANCE = "芝1200"
-TARGET_TRACK_TYPE = "良" # Assuming a typical good track for prediction
-TARGET_WEATHER = "晴" # Assuming a typical clear weather for prediction
-CURRENT_RACE_DATE = pd.to_datetime("2025-07-06") # Date of the target race (北九州記念)
+def get_race_info_from_url(race_url):
+    """
+    Scrapes the race page to get race details.
 
-NUM_RECOMMENDATIONS = 10 # Number of trifecta combinations to recommend
+    Args:
+        race_url (str): The URL of the race page.
 
-def main():
-    print("--- 競馬予想プログラムを開始します ---")
+    Returns:
+        dict: A dictionary containing race details, or None if an error occurred.
+    """
+    try:
+        response = requests.get(race_url, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "lxml")
+
+        # Extract race details from RaceData01
+        race_details_element = soup.find('div', class_='RaceData01')
+        if not race_details_element:
+            print("RaceData01 element not found.")
+            return None
+        details_text = race_details_element.text.strip()
+
+        distance_match = re.search(r'(芝|ダ)(\d+)m', details_text)
+        if not distance_match:
+            print("Could not extract distance from RaceData01.")
+            return None
+        track_type = distance_match.group(1) + str(distance_match.group(2))
+
+        weather_match = re.search(r'天候:(\w+)', details_text)
+        weather = weather_match.group(1) if weather_match else "良"
+
+        # Search for the date in the entire page text, as its location can be inconsistent
+        page_text = soup.get_text()
+        date_match = re.search(r'(\d{4})年(\d{1,2})月(\d{1,2})日', page_text)
+        if date_match:
+            year, month, day = date_match.groups()
+            race_date_str = f"{year}-{month}-{day}"
+            race_date = pd.to_datetime(race_date_str)
+        else:
+            print(f"Could not find date in the page's text.")
+            return None
+
+        return {
+            "distance": track_type,
+            "track_type": weather,  # Assuming track condition is same as weather for simplicity
+            "weather": weather,
+            "date": race_date
+        }
+    except Exception as e:
+        print(f"レース情報の取得中にエラー: {e}")
+        return None
+
+def main(race_url, lap_times=None):
+    print(f"--- Analyzing race: {race_url} ---")
+
+    race_id_match = re.search(r'race_id=(\d+)', race_url)
+    if not race_id_match:
+        print("URLからrace_idが見つかりません。")
+        return None, None
+
+    race_id = race_id_match.group(1)
+    shutuba_csv_path = fetch_and_save_shutuba_data(race_id)
+    if not shutuba_csv_path:
+        return None, None
+
+    race_info = get_race_info_from_url(race_url)
+    if not race_info:
+        return None, None
 
     try:
-        # 1. Load the shutuba DataFrame
-        df_shutuba = pd.read_csv(SHUTUBA_CSV_PATH)
-        print(f"出馬表データを {SHUTUBA_CSV_PATH} から読み込みました。")
-
-        # Prepare a list to store horse scores
+        df_shutuba = pd.read_csv(shutuba_csv_path)
         horse_scores = []
-
-        # 2. Calculate score for each horse
-        print("各出走馬のスコアを計算中... (時間がかかる場合があります)")
         for index, row in df_shutuba.iterrows():
             horse_id = str(row['horse_id'])
-            horse_name = row['horse_name']
-            umaban = row['umaban']
-            yoso_ninki = row['yoso_ninki'] # Use yoso_ninki for initial popularity
-
-            print(f"  - {horse_name} (馬番: {umaban}, ID: {horse_id}) のスコアを計算中...")
+            sire_id = pd.to_numeric(row['sire_id'], errors='coerce')
+            bms_id = pd.to_numeric(row['bms_id'], errors='coerce')
             score = get_horse_total_score(
-                horse_id, TARGET_DISTANCE, TARGET_TRACK_TYPE, TARGET_WEATHER, yoso_ninki, CURRENT_RACE_DATE
+                horse_id, race_info["distance"], race_info["track_type"],
+                race_info["weather"], row['yoso_ninki'], race_info["date"],
+                row['jockey_name'], pd.to_numeric(row['jockey_cd'], errors='coerce'),
+                sire_id if pd.notna(sire_id) else None,
+                bms_id if pd.notna(bms_id) else None,
+                row['futan'], row['weight'], row['weight_sa'], row['wakuban'],
+                row['odds'], row['corner'], row['kyaku'], row['time'], row['pace'],
+                row['harontimel3'], row['chakusa'], row['sex'], row['age'],
+                row['blinker'], row['norikawari'], row['trainer_syozoku'], row['owner_cd'], lap_times
             )
             horse_scores.append({
-                'umaban': umaban,
-                'horse_name': horse_name,
-                'score': score,
-                'popularity_rank': yoso_ninki
+                'umaban': row['umaban'],
+                'horse_name': row['horse_name'],
+                'score': score
             })
-            print(f"    スコア: {score:.2f}")
 
-        # Sort horses by score in descending order
         sorted_horses = sorted(horse_scores, key=lambda x: x['score'], reverse=True)
-        
-        print("\n--- スコア上位馬 --- ")
-        for i, horse in enumerate(sorted_horses):
-            print(f"{i+1}. 馬番: {horse['umaban']}, 馬名: {horse['horse_name']}, スコア: {horse['score']:.2f}, {horse['popularity_rank']}番人気")
 
-        # 3. Generate trifecta (三連複) recommendations
-        # Pick top N horses for combinations. Let's start with top 6-8 for reasonable combinations.
-        # The number of horses to consider for combinations can be adjusted.
-        horses_for_combinations = sorted_horses[:8] # Consider top 8 horses
-        
-        recommended_combinations = []
-        for combo in itertools.combinations(horses_for_combinations, 3):
-            # Sort the combination by umaban for consistent output
-            sorted_combo = sorted(combo, key=lambda x: x['umaban'])
-            recommended_combinations.append(tuple(h['umaban'] for h in sorted_combo))
+        # --- Generate new recommendations based on LLM-add3.txt ---
+        # Tansho (Win): Top 2 horses
+        # Fukusho (Place): Top 2 horses
+        # Wide (Quinella Place): 6 combinations from top 4 horses
 
-        # Limit to NUM_RECOMMENDATIONS
-        recommended_combinations = recommended_combinations[:NUM_RECOMMENDATIONS]
+        # Top 2 horses for Tansho and Fukusho
+        top_2_horses = sorted_horses[:2]
+        tansho_bets = [h['umaban'] for h in top_2_horses]
+        fukusho_bets = [h['umaban'] for h in top_2_horses]
 
-        print(f"\n--- おすすめ三連複馬券 ({NUM_RECOMMENDATIONS}点) --- ")
-        for i, combo in enumerate(recommended_combinations):
-            print(f"{i+1}. {combo}")
+        # Top 4 horses for Wide combinations (yields C(4,2) = 6 combinations)
+        top_4_horses = sorted_horses[:4]
+        wide_combinations = list(itertools.combinations([h['umaban'] for h in top_4_horses], 2))
+        wide_bets = [tuple(sorted(combo)) for combo in wide_combinations]
 
-    except FileNotFoundError:
-        print(f"エラー: 出馬表ファイルが見つかりません。パスを確認してください: {SHUTUBA_CSV_PATH}")
+        recommended_bets = {
+            "tansho": tansho_bets,
+            "fukusho": fukusho_bets,
+            "wide": wide_bets
+        }
+
+        return sorted_horses, recommended_bets
+
     except Exception as e:
-        print(f"予期せぬエラーが発生しました: {e}")
+        print(f"Prediction error: {e}")
+        return None, None
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) > 1:
+        race_url = sys.argv[1]
+        predicted_horses, recommended_bets = main(race_url)
+        if predicted_horses and recommended_bets:
+            print("\n--- スコア上位馬 ---")
+            for i, horse in enumerate(predicted_horses):
+                print(f"{i+1}. 馬番: {horse['umaban']}, 馬名: {horse['horse_name']}, スコア: {horse['score']:.2f}")
+            
+            print("\n--- おすすめ単勝馬券 (2点) ---")
+            if recommended_bets.get('tansho'):
+                for umaban in recommended_bets['tansho']:
+                    print(f"- {umaban}")
+
+            print("\n--- おすすめ複勝馬券 (2点) ---")
+            if recommended_bets.get('fukusho'):
+                for umaban in recommended_bets['fukusho']:
+                    print(f"- {umaban}")
+
+            print("\n--- おすすめワイド馬券 (6点) ---")
+            if recommended_bets.get('wide'):
+                for i, combo in enumerate(recommended_bets['wide']):
+                    print(f"{i+1}. {combo}")
+    else:
+        print("使用法: python main.py <レースページのURL>")
